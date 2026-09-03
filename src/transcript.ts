@@ -54,6 +54,24 @@ export interface TranscriptFoldResult {
   steps: TranscriptStep[];
 }
 
+/**
+ * Where a fold lets post-accept frames live.
+ *
+ * - `"strict"` — SPEC §2 as first written: post-accept frames only in the contract's derived
+ *   deal room. The default, and what an auditor with their own venue should use.
+ * - `"offer-room-fallback"` — additionally accepts post-accept frames posted in `tclk-offers`.
+ *   The shared venue refuses every new room once it is at its room cap (`400 room limit
+ *   reached`), so nobody there can create the derived deal room; the whole live board posts
+ *   lock/reveal/refund/receipt on the offer room instead, and a strict fold sees every one of
+ *   those contracts stuck at `accepted`. The fallback never relaxes anything else: the frame
+ *   still has to be signed by a party, name this contract, and pass the state guards.
+ */
+export type RoomBinding = "strict" | "offer-room-fallback";
+
+export interface FoldOptions {
+  roomBinding?: RoomBinding;
+}
+
 export interface ContractHandshake {
   offer: TranscriptRecord;
   accept: TranscriptRecord;
@@ -231,9 +249,17 @@ export function findContractHandshake(
  * Authenticate and fold records in the supplied order. Every record gets a verdict;
  * invalid signatures, forged `from` fields, wrong rooms, malformed lines and bad
  * transitions are rejected without changing state. Deadline guards use that record's
- * venue timestamp.
+ * venue timestamp. `options.roomBinding` selects how the room binding is enforced
+ * (see RoomBinding); the default is strict.
  */
-export function foldTranscript(records: readonly TranscriptRecord[]): TranscriptFoldResult {
+export function foldTranscript(
+  records: readonly TranscriptRecord[],
+  options: FoldOptions = {},
+): TranscriptFoldResult {
+  const roomBinding: RoomBinding = options.roomBinding ?? "strict";
+  if (roomBinding !== "strict" && roomBinding !== "offer-room-fallback") {
+    throw new Error(`tclk: unknown roomBinding ${JSON.stringify(roomBinding)}`);
+  }
   const steps: TranscriptStep[] = [];
   let state: ContractState | null = null;
 
@@ -292,10 +318,17 @@ export function foldTranscript(records: readonly TranscriptRecord[]): Transcript
       frame.type === "offer" || frame.type === "accept" || state.contract === undefined
         ? OFFER_ROOM
         : dealRoom(state.contract);
-    if (record.room !== expectedRoom) {
+    // The fallback admits the offer room for post-accept frames; a frame in any other
+    // room is still rejected, and offer/accept never move off the board.
+    const roomOk =
+      record.room === expectedRoom ||
+      (roomBinding === "offer-room-fallback" && record.room === OFFER_ROOM);
+    if (!roomOk) {
       const where = expectedRoom === OFFER_ROOM
         ? OFFER_ROOM
-        : `the derived deal room ${expectedRoom}`;
+        : roomBinding === "offer-room-fallback"
+          ? `the derived deal room ${expectedRoom} or ${OFFER_ROOM}`
+          : `the derived deal room ${expectedRoom}`;
       steps.push({
         ...base,
         type: frame.type,

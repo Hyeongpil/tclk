@@ -244,6 +244,14 @@ export function createServer(options: HandlerOptions = {}): McpServer {
       annotations: READS,
       inputSchema: {
         records: z.array(transcriptRecord).describe("Complete room records, oldest first."),
+        roomBinding: z
+          .enum(["strict", "offer-room-fallback"])
+          .optional()
+          .describe(
+            "Where post-accept frames may live. `strict` (default): only the derived deal " +
+            "room. `offer-room-fallback`: also `tclk-offers`, for a venue that cannot create " +
+            "the deal room (room cap). Signatures, parties and state guards are unchanged.",
+          ),
       },
     },
     (args) => run(() => h.tclk_apply_transcript(args)),

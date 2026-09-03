@@ -151,6 +151,109 @@ describe("trusted transcript records", () => {
     });
   });
 
+  it("admits post-accept frames on the offer room only under the offer-room fallback", () => {
+    // What the whole live board does: the venue is at its room cap, so the derived deal room
+    // cannot be created and lock/reveal land in tclk-offers. Strict stays strict; the
+    // fallback folds the same records to claimed.
+    const { lock, offer, accept } = deal();
+    const lockFrame = {
+      type: "lock" as const,
+      from: payer.did,
+      contract: accept.contract,
+      rail: "flop-htlc",
+      ref: "escrow-on-the-board",
+    };
+    const reveal = {
+      type: "reveal" as const,
+      from: payee.did,
+      contract: accept.contract,
+      ref: "escrow-on-the-board",
+      secret: lock.preimage,
+    };
+    const records = [
+      record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
+      record(BOARD, 2, NOW, payee, encodeFrame(accept)),
+      record(BOARD, 3, NOW + 1, payer, encodeFrame(lockFrame)),
+      record(BOARD, 4, NOW + 2, payee, encodeFrame(reveal)),
+    ];
+
+    const strict = foldTranscript(records);
+    expect(strict.state?.status).toBe("accepted");
+    expect(strict.steps[2]).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/derived deal room/),
+    });
+
+    const relaxed = foldTranscript(records, { roomBinding: "offer-room-fallback" });
+    expect(relaxed.steps.map((step) => step.ok)).toEqual([true, true, true, true]);
+    expect(relaxed.state?.status).toBe("claimed");
+    expect(relaxed.state?.secret).toBe(lock.preimage);
+  });
+
+  it("keeps every other guard under the fallback", () => {
+    const { lock, offer, accept } = deal();
+    const lockFrame = {
+      type: "lock" as const,
+      from: payer.did,
+      contract: accept.contract,
+      rail: "flop-htlc",
+      ref: "escrow-44",
+    };
+    const strangerReveal = {
+      type: "reveal" as const,
+      from: stranger.did,
+      contract: accept.contract,
+      ref: "escrow-44",
+      secret: lock.preimage,
+    };
+    const wrongSecret = {
+      type: "reveal" as const,
+      from: payee.did,
+      contract: accept.contract,
+      ref: "escrow-44",
+      secret: `0x${"00".repeat(32)}`,
+    };
+    const folded = foldTranscript(
+      [
+        record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
+        record(BOARD, 2, NOW, payee, encodeFrame(accept)),
+        record("lobby", 3, NOW + 1, payer, encodeFrame(lockFrame)),
+        record(BOARD, 4, NOW + 2, payer, encodeFrame(lockFrame)),
+        record(BOARD, 5, NOW + 3, stranger, encodeFrame(strangerReveal)),
+        record(BOARD, 6, NOW + 4, payee, encodeFrame(wrongSecret)),
+      ],
+      { roomBinding: "offer-room-fallback" },
+    );
+
+    expect(folded.steps[2]).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/derived deal room .* or tclk-offers/),
+    });
+    expect(folded.steps[3]).toMatchObject({ ok: true, type: "lock" });
+    expect(folded.steps[4]).toMatchObject({ ok: false, reason: "only the payee reveals" });
+    expect(folded.steps[5]).toMatchObject({
+      ok: false,
+      reason: "secret does not open the statement",
+    });
+    expect(folded.state?.status).toBe("locked");
+
+    // An offer or accept never moves off the board, in either mode.
+    const offRoomAccept = foldTranscript(
+      [
+        record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
+        record(dealRoom(accept.contract), 1, NOW, payee, encodeFrame(accept)),
+      ],
+      { roomBinding: "offer-room-fallback" },
+    );
+    expect(offRoomAccept.state?.status).toBe("proposed");
+    expect(offRoomAccept.steps[1]).toMatchObject({
+      ok: false,
+      reason: "accept must be posted in tclk-offers",
+    });
+
+    expect(() => foldTranscript([], { roomBinding: "lenient" as never })).toThrow(/roomBinding/);
+  });
+
   it("rejects unsigned records and malformed timestamps without a fallback clock", () => {
     const { offer } = deal();
     const unsigned = record(BOARD, 1, NOW, payer, encodeFrame(offer));

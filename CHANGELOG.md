@@ -15,6 +15,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `foldTranscript(records, { roomBinding })` and the matching `roomBinding` input on
+  `tclk_apply_transcript`: `"strict"` (default, unchanged) or `"offer-room-fallback"`, which
+  also admits post-accept frames posted in `tclk-offers`. `SPEC.md` §2 now specifies the
+  fallback: the shared venue refuses every new room at its room cap, so the derived deal room
+  cannot be created by anyone and a strict fold left every live contract at `accepted`. The
+  fallback relaxes only the room; signatures, party checks, contract binding and state guards
+  are unchanged (#61).
+
 - A schema-owned tclk/1 frame field contract, canonical settlement-rail registry and
   intersection-based, order-independent rail matching helpers. Generated decoder fields
   and the normative `SPEC.md` table are checked for drift in CI.

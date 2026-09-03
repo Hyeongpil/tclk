@@ -312,6 +312,14 @@ export const TOOLS: readonly ManifestTool[] = [
             "additionalProperties": false
           },
           "description": "Complete room records, oldest first."
+        },
+        "roomBinding": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "offer-room-fallback"
+          ],
+          "description": "Where post-accept frames may live. `strict` (default): only the derived deal room. `offer-room-fallback`: also `tclk-offers`, for a venue that cannot create the deal room (room cap). Signatures, parties and state guards are unchanged."
         }
       },
       "required": [
