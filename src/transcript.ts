@@ -64,8 +64,8 @@ export interface TranscriptFoldResult {
  *   deal room. The default.
  * - `"offer-room"` — post-accept frames only in `tclk-offers`; a frame in the derived room is
  *   rejected like any other wrong-room frame. For deals whose payer could not open the derived
- *   room — technocore refuses new rooms per client at `rate_rooms_per_day` (20) with a 400
- *   that reads as if the venue were full — and so announced the lock on the board instead.
+ *   room — a venue can refuse a new room outright (service-wide cap, `400`) or per client
+ *   (`rate_rooms_per_day`, `429`) — and so announced the lock on the board instead.
  *
  * Neither mode relaxes anything but the room: the frame still has to be signed by a party,
  * name this contract, and pass the state guards. Neither consults a settlement rail — a fold

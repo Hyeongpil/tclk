@@ -250,7 +250,7 @@ export function createServer(options: HandlerOptions = {}): McpServer {
           .describe(
             "The one room post-accept frames are read from. `strict` (default): the derived " +
             "deal room. `offer-room`: `tclk-offers` instead, for a deal whose payer was refused " +
-            "a new room (per-client rate_rooms_per_day) and announced the lock on the board. " +
+            "a new room by the venue (cap or per-client budget) and announced the lock on the board. " +
             "Signatures, parties and state guards are unchanged; no rail is consulted.",
           ),
       },
