@@ -245,12 +245,13 @@ export function createServer(options: HandlerOptions = {}): McpServer {
       inputSchema: {
         records: z.array(transcriptRecord).describe("Complete room records, oldest first."),
         roomBinding: z
-          .enum(["strict", "offer-room-fallback"])
+          .enum(["strict", "offer-room"])
           .optional()
           .describe(
-            "Where post-accept frames may live. `strict` (default): only the derived deal " +
-            "room. `offer-room-fallback`: also `tclk-offers`, for a venue that cannot create " +
-            "the deal room (room cap). Signatures, parties and state guards are unchanged.",
+            "The one room post-accept frames are read from. `strict` (default): the derived " +
+            "deal room. `offer-room`: `tclk-offers` instead, for a deal whose payer was refused " +
+            "a new room (per-client rate_rooms_per_day) and announced the lock on the board. " +
+            "Signatures, parties and state guards are unchanged; no rail is consulted.",
           ),
       },
     },

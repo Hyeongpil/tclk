@@ -150,7 +150,7 @@ describe("room binding", () => {
       ref: "escrow-45",
       secret: accept.secret,
     });
-    // Every record on the board, as on a venue that cannot create the deal room.
+    // Every record on the board, as when the payer was refused a new room.
     const board = records([offer.line, accept.line, lock.line, reveal.line], NOW).map(
       (rec, index) => {
         if (rec.room === "tclk-offers") return rec;
@@ -169,7 +169,7 @@ describe("room binding", () => {
     expect(strict.status).toBe("accepted");
     expect(strict.steps[2]).toMatchObject({ ok: false });
 
-    const relaxed = h.tclk_apply_transcript({ records: board, roomBinding: "offer-room-fallback" });
+    const relaxed = h.tclk_apply_transcript({ records: board, roomBinding: "offer-room" });
     expect(relaxed.steps.map((s) => s.ok)).toEqual([true, true, true, true]);
     expect(relaxed.status).toBe("claimed");
     expect(relaxed.secretRevealed).toBe(true);

@@ -55,18 +55,25 @@ export interface TranscriptFoldResult {
 }
 
 /**
- * Where a fold lets post-accept frames live.
+ * Which single room a fold reads post-accept frames from. Exactly one, in either mode —
+ * admitting both rooms would leave the result depending on how the caller interleaved two
+ * independent streams (per-room `seq`, millisecond timestamps that can tie), so signed
+ * evidence would no longer determine one state.
  *
  * - `"strict"` — SPEC §2 as first written: post-accept frames only in the contract's derived
- *   deal room. The default, and what an auditor with their own venue should use.
- * - `"offer-room-fallback"` — additionally accepts post-accept frames posted in `tclk-offers`.
- *   The shared venue refuses every new room once it is at its room cap (`400 room limit
- *   reached`), so nobody there can create the derived deal room; the whole live board posts
- *   lock/reveal/refund/receipt on the offer room instead, and a strict fold sees every one of
- *   those contracts stuck at `accepted`. The fallback never relaxes anything else: the frame
- *   still has to be signed by a party, name this contract, and pass the state guards.
+ *   deal room. The default.
+ * - `"offer-room"` — post-accept frames only in `tclk-offers`; a frame in the derived room is
+ *   rejected like any other wrong-room frame. For deals whose payer could not open the derived
+ *   room — technocore refuses new rooms per client at `rate_rooms_per_day` (20) with a 400
+ *   that reads as if the venue were full — and so announced the lock on the board instead.
+ *
+ * Neither mode relaxes anything but the room: the frame still has to be signed by a party,
+ * name this contract, and pass the state guards. Neither consults a settlement rail — a fold
+ * says what the signed transcript establishes, not that anything was funded. And the board
+ * is a ~10 MiB ring: a deal kept there stops being verifiable from the venue within hours,
+ * so `"offer-room"` restores visibility, not durability.
  */
-export type RoomBinding = "strict" | "offer-room-fallback";
+export type RoomBinding = "strict" | "offer-room";
 
 export interface FoldOptions {
   roomBinding?: RoomBinding;
@@ -257,7 +264,7 @@ export function foldTranscript(
   options: FoldOptions = {},
 ): TranscriptFoldResult {
   const roomBinding: RoomBinding = options.roomBinding ?? "strict";
-  if (roomBinding !== "strict" && roomBinding !== "offer-room-fallback") {
+  if (roomBinding !== "strict" && roomBinding !== "offer-room") {
     throw new Error(`tclk: unknown roomBinding ${JSON.stringify(roomBinding)}`);
   }
   const steps: TranscriptStep[] = [];
@@ -314,21 +321,18 @@ export function foldTranscript(
       return;
     }
 
+    // Offer/accept always belong to the board; post-accept frames belong to exactly one
+    // room chosen by the mode. A frame anywhere else is rejected, in either mode.
     const expectedRoom =
       frame.type === "offer" || frame.type === "accept" || state.contract === undefined
         ? OFFER_ROOM
-        : dealRoom(state.contract);
-    // The fallback admits the offer room for post-accept frames; a frame in any other
-    // room is still rejected, and offer/accept never move off the board.
-    const roomOk =
-      record.room === expectedRoom ||
-      (roomBinding === "offer-room-fallback" && record.room === OFFER_ROOM);
-    if (!roomOk) {
+        : roomBinding === "offer-room"
+          ? OFFER_ROOM
+          : dealRoom(state.contract);
+    if (record.room !== expectedRoom) {
       const where = expectedRoom === OFFER_ROOM
         ? OFFER_ROOM
-        : roomBinding === "offer-room-fallback"
-          ? `the derived deal room ${expectedRoom} or ${OFFER_ROOM}`
-          : `the derived deal room ${expectedRoom}`;
+        : `the derived deal room ${expectedRoom}`;
       steps.push({
         ...base,
         type: frame.type,

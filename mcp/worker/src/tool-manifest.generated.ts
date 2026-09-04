@@ -317,9 +317,9 @@ export const TOOLS: readonly ManifestTool[] = [
           "type": "string",
           "enum": [
             "strict",
-            "offer-room-fallback"
+            "offer-room"
           ],
-          "description": "Where post-accept frames may live. `strict` (default): only the derived deal room. `offer-room-fallback`: also `tclk-offers`, for a venue that cannot create the deal room (room cap). Signatures, parties and state guards are unchanged."
+          "description": "The one room post-accept frames are read from. `strict` (default): the derived deal room. `offer-room`: `tclk-offers` instead, for a deal whose payer was refused a new room (per-client rate_rooms_per_day) and announced the lock on the board. Signatures, parties and state guards are unchanged; no rail is consulted."
         }
       },
       "required": [

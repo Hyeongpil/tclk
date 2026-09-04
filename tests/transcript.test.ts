@@ -151,10 +151,10 @@ describe("trusted transcript records", () => {
     });
   });
 
-  it("admits post-accept frames on the offer room only under the offer-room fallback", () => {
-    // What the whole live board does: the venue is at its room cap, so the derived deal room
-    // cannot be created and lock/reveal land in tclk-offers. Strict stays strict; the
-    // fallback folds the same records to claimed.
+  it("reads post-accept frames from the board only in offer-room mode", () => {
+    // A payer refused a new room by the venue's per-client rate_rooms_per_day announces the
+    // lock on tclk-offers. Strict stays strict; offer-room mode folds the same records to
+    // claimed.
     const { lock, offer, accept } = deal();
     const lockFrame = {
       type: "lock" as const,
@@ -184,13 +184,48 @@ describe("trusted transcript records", () => {
       reason: expect.stringMatching(/derived deal room/),
     });
 
-    const relaxed = foldTranscript(records, { roomBinding: "offer-room-fallback" });
+    const relaxed = foldTranscript(records, { roomBinding: "offer-room" });
     expect(relaxed.steps.map((step) => step.ok)).toEqual([true, true, true, true]);
     expect(relaxed.state?.status).toBe("claimed");
     expect(relaxed.state?.secret).toBe(lock.preimage);
+
+    // One room per mode: in offer-room mode the derived room is the wrong room.
+    const mixed = foldTranscript(
+      [records[0], records[1], record(dealRoom(accept.contract), 1, NOW + 1, payer, encodeFrame(lockFrame))],
+      { roomBinding: "offer-room" },
+    );
+    expect(mixed.state?.status).toBe("accepted");
+    expect(mixed.steps[2]).toMatchObject({ ok: false, reason: "lock must be posted in tclk-offers" });
   });
 
-  it("keeps every other guard under the fallback", () => {
+  it("gives one answer regardless of how two rooms' records are interleaved", () => {
+    // Regression for the review on #62: a valid payer cancel on the board and a valid payer
+    // lock in the derived room, same millisecond. With both rooms admitted the verdict would
+    // depend on caller order; with one room per mode it does not.
+    const { offer, accept } = deal();
+    const lockFrame = {
+      type: "lock" as const,
+      from: payer.did,
+      contract: accept.contract,
+      rail: "flop-htlc",
+      ref: "escrow-tie",
+    };
+    const cancel = { type: "cancel" as const, from: payer.did, contract: accept.contract };
+    const board = [
+      record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
+      record(BOARD, 2, NOW, payee, encodeFrame(accept)),
+    ];
+    const cancelOnBoard = record(BOARD, 3, NOW + 1, payer, encodeFrame(cancel));
+    const lockInRoom = record(dealRoom(accept.contract), 1, NOW + 1, payer, encodeFrame(lockFrame));
+
+    for (const tail of [[cancelOnBoard, lockInRoom], [lockInRoom, cancelOnBoard]]) {
+      expect(foldTranscript([...board, ...tail]).state?.status).toBe("locked");
+      expect(foldTranscript([...board, ...tail], { roomBinding: "offer-room" }).state?.status)
+        .toBe("cancelled");
+    }
+  });
+
+  it("keeps every other guard in offer-room mode", () => {
     const { lock, offer, accept } = deal();
     const lockFrame = {
       type: "lock" as const,
@@ -222,12 +257,12 @@ describe("trusted transcript records", () => {
         record(BOARD, 5, NOW + 3, stranger, encodeFrame(strangerReveal)),
         record(BOARD, 6, NOW + 4, payee, encodeFrame(wrongSecret)),
       ],
-      { roomBinding: "offer-room-fallback" },
+      { roomBinding: "offer-room" },
     );
 
     expect(folded.steps[2]).toMatchObject({
       ok: false,
-      reason: expect.stringMatching(/derived deal room .* or tclk-offers/),
+      reason: "lock must be posted in tclk-offers",
     });
     expect(folded.steps[3]).toMatchObject({ ok: true, type: "lock" });
     expect(folded.steps[4]).toMatchObject({ ok: false, reason: "only the payee reveals" });
@@ -243,7 +278,7 @@ describe("trusted transcript records", () => {
         record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
         record(dealRoom(accept.contract), 1, NOW, payee, encodeFrame(accept)),
       ],
-      { roomBinding: "offer-room-fallback" },
+      { roomBinding: "offer-room" },
     );
     expect(offRoomAccept.state?.status).toBe("proposed");
     expect(offRoomAccept.steps[1]).toMatchObject({
