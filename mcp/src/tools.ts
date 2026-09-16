@@ -34,7 +34,6 @@ import {
   type OfferFrame,
   type PresigRef,
   type TclkFrame,
-  type RoomBinding,
   type TranscriptRecord,
 } from "@flop-labs/tclk";
 
@@ -257,8 +256,8 @@ export function createHandlers(options: HandlerOptions = {}) {
      * each record signature and sender binding, then applies its frame at that record's
      * venue timestamp. Every record gets a verdict and invalid input changes no state.
      */
-    tclk_apply_transcript(input: { records: TranscriptRecord[]; roomBinding?: RoomBinding }) {
-      const folded = foldTranscript(input.records, { roomBinding: input.roomBinding });
+    tclk_apply_transcript(input: { records: TranscriptRecord[] }) {
+      const folded = foldTranscript(input.records);
       if (folded.state === null) {
         const offerFailure = folded.steps.find((step) => step.type === "offer" && !step.ok);
         fail(
@@ -285,6 +284,11 @@ export function createHandlers(options: HandlerOptions = {}) {
         // The revealed secret is deliberately NOT echoed: it is in the transcript the
         // caller already holds, and this server never republishes secret material.
         secretRevealed: open.secret !== undefined,
+        // Which room the post-accept frames were read from, derived from these records and
+        // never selected by the caller, plus whether a party wrote post-accept frames in
+        // both rooms. A verdict without its binding is not auditable.
+        roomBinding: folded.roomBinding,
+        equivocation: folded.equivocation,
         steps: folded.steps,
       };
     },

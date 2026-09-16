@@ -151,10 +151,10 @@ describe("trusted transcript records", () => {
     });
   });
 
-  it("reads post-accept frames from the board only in offer-room mode", () => {
-    // A payer refused a new room by the venue's per-client rate_rooms_per_day announces the
-    // lock on tclk-offers. Strict stays strict; offer-room mode folds the same records to
-    // claimed.
+  it("binds post-accept frames to the board when the derived room holds none", () => {
+    // A payer the venue refused a new room (service-wide cap, or the per-client
+    // rate_rooms_per_day budget) announces the lock on tclk-offers. Nothing in the derived
+    // room contradicts it, so the board binds and the deal folds to claimed.
     const { lock, offer, accept } = deal();
     const lockFrame = {
       type: "lock" as const,
@@ -177,31 +177,72 @@ describe("trusted transcript records", () => {
       record(BOARD, 4, NOW + 2, payee, encodeFrame(reveal)),
     ];
 
-    const strict = foldTranscript(records);
-    expect(strict.state?.status).toBe("accepted");
-    expect(strict.steps[2]).toMatchObject({
-      ok: false,
-      reason: expect.stringMatching(/derived deal room/),
-    });
+    const folded = foldTranscript(records);
+    expect(folded.steps.map((step) => step.ok)).toEqual([true, true, true, true]);
+    expect(folded.state?.status).toBe("claimed");
+    expect(folded.state?.secret).toBe(lock.preimage);
+    expect(folded.roomBinding).toBe("offer-room");
+    expect(folded.equivocation).toBe(false);
 
-    const relaxed = foldTranscript(records, { roomBinding: "offer-room" });
-    expect(relaxed.steps.map((step) => step.ok)).toEqual([true, true, true, true]);
-    expect(relaxed.state?.status).toBe("claimed");
-    expect(relaxed.state?.secret).toBe(lock.preimage);
-
-    // One room per mode: in offer-room mode the derived room is the wrong room.
-    const mixed = foldTranscript(
-      [records[0], records[1], record(dealRoom(accept.contract), 1, NOW + 1, payer, encodeFrame(lockFrame))],
-      { roomBinding: "offer-room" },
+    // Party-signed evidence in the derived deal room takes the binding back, and a board
+    // record for the same contract is then the wrong room.
+    const inDerivedRoom = record(
+      dealRoom(accept.contract), 1, NOW + 1, payer, encodeFrame(lockFrame),
     );
-    expect(mixed.state?.status).toBe("accepted");
-    expect(mixed.steps[2]).toMatchObject({ ok: false, reason: "lock must be posted in tclk-offers" });
+    const contested = foldTranscript([...records.slice(0, 3), inDerivedRoom]);
+    expect(contested.roomBinding).toBe("strict");
+    expect(contested.equivocation).toBe(true);
+    expect(contested.steps[2]).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/derived deal room .*both rooms/s),
+    });
+    expect(contested.steps[3]).toMatchObject({ ok: true, type: "lock" });
+    expect(contested.state?.status).toBe("locked");
   });
 
-  it("gives one answer regardless of how two rooms' records are interleaved", () => {
-    // Regression for the review on #62: a valid payer cancel on the board and a valid payer
-    // lock in the derived room, same millisecond. With both rooms admitted the verdict would
-    // depend on caller order; with one room per mode it does not.
+  it("does not let a stranger's record move the room binding", () => {
+    // Only a party of this contract is evidence. A stranger writing in the derived room
+    // must not be able to pull a board-bound deal back to strict — that would be a way to
+    // erase a refused payer's lock — and a stranger on the board must not loosen a
+    // derived-room deal either.
+    const { offer, accept } = deal();
+    const lockFrame = {
+      type: "lock" as const,
+      from: payer.did,
+      contract: accept.contract,
+      rail: "flop-htlc",
+      ref: "escrow-stranger",
+    };
+    const strangerLock = { ...lockFrame, from: stranger.did };
+    const board = [
+      record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
+      record(BOARD, 2, NOW, payee, encodeFrame(accept)),
+    ];
+
+    const boardBound = foldTranscript([
+      ...board,
+      record(dealRoom(accept.contract), 1, NOW + 1, stranger, encodeFrame(strangerLock)),
+      record(BOARD, 3, NOW + 2, payer, encodeFrame(lockFrame)),
+    ]);
+    expect(boardBound.roomBinding).toBe("offer-room");
+    expect(boardBound.equivocation).toBe(false);
+    expect(boardBound.state?.status).toBe("locked");
+
+    const roomBound = foldTranscript([
+      ...board,
+      record(BOARD, 3, NOW + 1, stranger, encodeFrame(strangerLock)),
+      record(dealRoom(accept.contract), 1, NOW + 2, payer, encodeFrame(lockFrame)),
+    ]);
+    expect(roomBound.roomBinding).toBe("strict");
+    expect(roomBound.equivocation).toBe(false);
+    expect(roomBound.state?.status).toBe("locked");
+  });
+
+  it("gives one answer for one record set, however it is interleaved or entered", () => {
+    // Regression for the two reviews on #62. A valid payer cancel on the board and a valid
+    // payer lock in the derived room, same millisecond: with both rooms admitted the verdict
+    // followed caller order, and with a caller-chosen mode it followed the option. Neither
+    // is a choice any more — the records decide, and the fold says which room bound.
     const { offer, accept } = deal();
     const lockFrame = {
       type: "lock" as const,
@@ -219,13 +260,14 @@ describe("trusted transcript records", () => {
     const lockInRoom = record(dealRoom(accept.contract), 1, NOW + 1, payer, encodeFrame(lockFrame));
 
     for (const tail of [[cancelOnBoard, lockInRoom], [lockInRoom, cancelOnBoard]]) {
-      expect(foldTranscript([...board, ...tail]).state?.status).toBe("locked");
-      expect(foldTranscript([...board, ...tail], { roomBinding: "offer-room" }).state?.status)
-        .toBe("cancelled");
+      const folded = foldTranscript([...board, ...tail]);
+      expect(folded.state?.status).toBe("locked");
+      expect(folded.roomBinding).toBe("strict");
+      expect(folded.equivocation).toBe(true);
     }
   });
 
-  it("keeps every other guard in offer-room mode", () => {
+  it("keeps every other guard where the board binds", () => {
     const { lock, offer, accept } = deal();
     const lockFrame = {
       type: "lock" as const,
@@ -248,18 +290,17 @@ describe("trusted transcript records", () => {
       ref: "escrow-44",
       secret: `0x${"00".repeat(32)}`,
     };
-    const folded = foldTranscript(
-      [
-        record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
-        record(BOARD, 2, NOW, payee, encodeFrame(accept)),
-        record("lobby", 3, NOW + 1, payer, encodeFrame(lockFrame)),
-        record(BOARD, 4, NOW + 2, payer, encodeFrame(lockFrame)),
-        record(BOARD, 5, NOW + 3, stranger, encodeFrame(strangerReveal)),
-        record(BOARD, 6, NOW + 4, payee, encodeFrame(wrongSecret)),
-      ],
-      { roomBinding: "offer-room" },
-    );
+    const folded = foldTranscript([
+      record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
+      record(BOARD, 2, NOW, payee, encodeFrame(accept)),
+      record("lobby", 3, NOW + 1, payer, encodeFrame(lockFrame)),
+      record(BOARD, 4, NOW + 2, payer, encodeFrame(lockFrame)),
+      record(BOARD, 5, NOW + 3, stranger, encodeFrame(strangerReveal)),
+      record(BOARD, 6, NOW + 4, payee, encodeFrame(wrongSecret)),
+    ]);
 
+    // A foreign room is neither the board nor the derived room: no evidence, still rejected.
+    expect(folded.roomBinding).toBe("offer-room");
     expect(folded.steps[2]).toMatchObject({
       ok: false,
       reason: "lock must be posted in tclk-offers",
@@ -272,21 +313,17 @@ describe("trusted transcript records", () => {
     });
     expect(folded.state?.status).toBe("locked");
 
-    // An offer or accept never moves off the board, in either mode.
-    const offRoomAccept = foldTranscript(
-      [
-        record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
-        record(dealRoom(accept.contract), 1, NOW, payee, encodeFrame(accept)),
-      ],
-      { roomBinding: "offer-room" },
-    );
+    // An offer or accept never moves off the board, whichever room binds after it.
+    const offRoomAccept = foldTranscript([
+      record(BOARD, 1, NOW - 1, payer, encodeFrame(offer)),
+      record(dealRoom(accept.contract), 1, NOW, payee, encodeFrame(accept)),
+    ]);
     expect(offRoomAccept.state?.status).toBe("proposed");
+    expect(offRoomAccept.roomBinding).toBe("strict");
     expect(offRoomAccept.steps[1]).toMatchObject({
       ok: false,
       reason: "accept must be posted in tclk-offers",
     });
-
-    expect(() => foldTranscript([], { roomBinding: "lenient" as never })).toThrow(/roomBinding/);
   });
 
   it("rejects unsigned records and malformed timestamps without a fallback clock", () => {

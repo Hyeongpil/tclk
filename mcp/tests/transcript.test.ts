@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { dealRoom, decodeFrame, type TranscriptRecord } from "@flop-labs/tclk";
+import { dealRoom, decodeFrame, foldTranscript, type TranscriptRecord } from "@flop-labs/tclk";
 
 import { canonicalMessage, signerFromSeed } from "../src/signing.js";
 import { createHandlers } from "../src/tools.js";
@@ -136,7 +136,19 @@ describe("refund path", () => {
 });
 
 describe("room binding", () => {
-  it("passes roomBinding through so a board-only transcript can fold to claimed", () => {
+  function onBoard(rec: TranscriptRecord, index: number): TranscriptRecord {
+    if (rec.room === "tclk-offers") return rec;
+    const signer = rec.sender === PAYEE_DID ? payee : payer;
+    const nonce = String(2000 + index);
+    return {
+      ...rec,
+      room: "tclk-offers",
+      nonce,
+      signature: signer.sign(canonicalMessage("tclk-offers", Number(nonce), rec.line)),
+    };
+  }
+
+  it("folds a board-only transcript to claimed and reports the binding", () => {
     const { offer, accept } = openDeal();
     const lock = h.tclk_make_lock({
       from: PAYER_DID,
@@ -151,29 +163,44 @@ describe("room binding", () => {
       secret: accept.secret,
     });
     // Every record on the board, as when the payer was refused a new room.
-    const board = records([offer.line, accept.line, lock.line, reveal.line], NOW).map(
-      (rec, index) => {
-        if (rec.room === "tclk-offers") return rec;
-        const signer = rec.sender === PAYEE_DID ? payee : payer;
-        const nonce = String(2000 + index);
-        return {
-          ...rec,
-          room: "tclk-offers",
-          nonce,
-          signature: signer.sign(canonicalMessage("tclk-offers", Number(nonce), rec.line)),
-        };
-      },
-    );
+    const board = records([offer.line, accept.line, lock.line, reveal.line], NOW).map(onBoard);
 
-    const strict = h.tclk_apply_transcript({ records: board });
-    expect(strict.status).toBe("accepted");
-    expect(strict.steps[2]).toMatchObject({ ok: false });
+    const folded = h.tclk_apply_transcript({ records: board });
+    expect(folded.steps.map((s) => s.ok)).toEqual([true, true, true, true]);
+    expect(folded.status).toBe("claimed");
+    expect(folded.roomBinding).toBe("offer-room");
+    expect(folded.equivocation).toBe(false);
+    expect(folded.secretRevealed).toBe(true);
+    expect(JSON.stringify(folded)).not.toContain(accept.secret.slice(2));
+  });
 
-    const relaxed = h.tclk_apply_transcript({ records: board, roomBinding: "offer-room" });
-    expect(relaxed.steps.map((s) => s.ok)).toEqual([true, true, true, true]);
-    expect(relaxed.status).toBe("claimed");
-    expect(relaxed.secretRevealed).toBe(true);
-    expect(JSON.stringify(relaxed)).not.toContain(accept.secret.slice(2));
+  it("agrees with the core fold on one record set, in any order", () => {
+    // The reviewers' case, through both public entry points: a payer cancel on the board and
+    // a payer lock in the derived room. No caller input selects a room, so the tool and the
+    // library have to reach the same terminal state whichever way the records are handed in.
+    const { offer, accept } = openDeal();
+    const lock = h.tclk_make_lock({
+      from: PAYER_DID,
+      contract: accept.contract,
+      rail: "flop-htlc",
+      ref: "escrow-46",
+    });
+    const cancel = h.tclk_make_cancel({ from: PAYER_DID, contract: accept.contract });
+    const [offerRec, acceptRec, lockRec] = records([offer.line, accept.line, lock.line], NOW);
+    const cancelRec = onBoard(records([cancel.line], NOW)[0]!, 9);
+
+    for (const tail of [[cancelRec, lockRec!], [lockRec!, cancelRec]]) {
+      const set = [offerRec!, acceptRec!, ...tail];
+      const tool = h.tclk_apply_transcript({ records: set });
+      const core = foldTranscript(set);
+      expect(tool.status).toBe("locked");
+      expect(tool.roomBinding).toBe("strict");
+      expect(tool.equivocation).toBe(true);
+      expect({ status: core.state?.status, binding: core.roomBinding }).toEqual({
+        status: tool.status,
+        binding: tool.roomBinding,
+      });
+    }
   });
 });
 
